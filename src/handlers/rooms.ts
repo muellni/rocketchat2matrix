@@ -8,12 +8,14 @@ import {
   getMappingByMatrixId,
   getMemberships,
   getRoomId,
+  getUserId,
   save,
 } from '../helpers/storage'
 import {
   SessionOptions,
   axios,
   formatUserSessionOptions,
+  getAsSessionOptions,
   getUserSessionOptions,
 } from '../helpers/synapse'
 import { RcUser } from './users'
@@ -95,8 +97,11 @@ export function mapRoom(rcRoom: RcRoom): MatrixRoom {
     }
   }
 
-  if (rcRoom.description) {
-    room.topic = rcRoom.description
+  const topics = [rcRoom.topic, rcRoom.description].filter(
+    (t) => t && t.trim().length > 0
+  )
+  if (topics.length > 0) {
+    room.topic = topics.join('\n')
   }
 
   switch (rcRoom.t) {
@@ -184,6 +189,10 @@ export async function getCreatorSessionOptions(
 ): Promise<SessionOptions | object> {
   if (creatorId) {
     try {
+      const matrixUserId = await getUserId(creatorId)
+      if (matrixUserId) {
+        return getAsSessionOptions(matrixUserId)
+      }
       const creatorSessionOptions = await getUserSessionOptions(creatorId)
       log.debug('Room owner session generated:', creatorSessionOptions)
       return creatorSessionOptions
@@ -268,10 +277,18 @@ export async function acceptInvitation(
   log.http(
     `Accepting invitation for member ${inviteeMapping.rcId} aka. ${inviteeMapping.matrixId}`
   )
+  let sessionOptions = formatUserSessionOptions(inviteeMapping.accessToken || '')
+  if (inviteeMapping.matrixId) {
+    try {
+      sessionOptions = getAsSessionOptions(inviteeMapping.matrixId)
+    } catch (e) {
+      // Ignore if AS token not set
+    }
+  }
   await axios.post(
     `/_matrix/client/v3/join/${roomId}`,
     {},
-    formatUserSessionOptions(inviteeMapping.accessToken || '')
+    sessionOptions
   )
 }
 
@@ -454,11 +471,50 @@ export async function executeAndHandleMissingMember(
  * @param rcRoom A Rocket.Chat room object
  */
 export async function handle(rcRoom: RcRoom): Promise<void> {
+  const includedRooms = (process.env.INCLUDED_ROOMS || '')
+    .split(',')
+    .map((room) => room.trim())
+    .filter((room) => room !== '')
+
+  if (includedRooms.length > 0) {
+    const isIncludedByNameOrId =
+      includedRooms.includes(rcRoom.name || '') ||
+      includedRooms.includes(rcRoom._id)
+
+    let isIncludedByUsernames = false
+    if (rcRoom.t === RcRoomTypes.direct && rcRoom.usernames) {
+      const roomUsernames = rcRoom.usernames.sort().join(';')
+      isIncludedByUsernames = includedRooms.some((includedRoom) => {
+        const includedUsernames = includedRoom.split(';').sort().join(';')
+        return includedUsernames === roomUsernames
+      })
+    }
+
+    if (!isIncludedByNameOrId && !isIncludedByUsernames) {
+      return
+    }
+  }
+
   log.info(`Parsing room ${rcRoom.name || 'with ID: ' + rcRoom._id}`)
 
   const matrixRoomId = await getRoomId(rcRoom._id)
   if (matrixRoomId) {
     log.debug(`Mapping exists: ${rcRoom._id} -> ${matrixRoomId}`)
+    const room = mapRoom(rcRoom)
+    if (room.topic) {
+      const creatorId = getCreator(rcRoom)
+      const creatorSessionOptions = await getCreatorSessionOptions(creatorId)
+      try {
+        await axios.put(
+          `/_matrix/client/v3/rooms/${matrixRoomId}/state/m.room.topic`,
+          { topic: room.topic },
+          creatorSessionOptions
+        )
+        log.debug(`Updated topic for room ${matrixRoomId}`)
+      } catch (error) {
+        // Ignore errors, e.g. if the user is not in the room anymore
+      }
+    }
   } else {
     const matrixRoom = await createRoom(rcRoom)
     await createMapping(rcRoom._id, matrixRoom.room_id!)

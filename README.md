@@ -14,10 +14,14 @@ Currently manually via mongodb. Run the following on the server:
 ```shell
 mongoexport --collection=rocketchat_message --db=rocketchat --out=rocketchat_message.json
 mongoexport --collection=rocketchat_room --db=rocketchat --out=rocketchat_room.json
+mongoexport --collection=rocketchat_custom_emoji --db=rocketchat --out=rocketchat_custom_emoji.json
+mongoexport --collection=rocketchat_avatars --db=rocketchat --out=rocketchat_avatars.json
 mongoexport --collection=users --db=rocketchat --out=users.json
 ```
 
 Export them to `inputs/`
+
+If you used filesystem storage for uploads in rocket chatm you can add your fileuploads to `inputs/fileupload` to import files, user avatars and room avatars.
 
 ### Configuring the Matrix Dev Server
 
@@ -30,26 +34,29 @@ docker compose run --rm -e SYNAPSE_SERVER_NAME=my.matrix.host -e SYNAPSE_REPORT_
 To run the script without hitting rate limiting and activating an _Application Service_ to send messages by different users with our desired timestamps, you MUST add the following options to the freshly generated `files/homeserver.yaml`. **Do not leave these in the production setup!**
 
 ```yaml
+rc_message:
+  per_second: 1000000
+  burst_count: 1000000
 rc_joins:
   local:
-    per_second: 1024
-    burst_count: 2048
-rc_joins_per_room:
-  per_second: 1024
-  burst_count: 2048
-rc_message:
-  per_second: 1024
-  burst_count: 2048
+    per_second: 1000000
+    burst_count: 1000000
+  remote:
+    per_second: 1000000
+    burst_count: 1000000
+rc_room_creation:
+  per_second: 1000000
+  burst_count: 1000000
 rc_invites:
-  per_room:
-    per_second: 1024
-    burst_count: 2048
-  per_user:
-    per_second: 1024
-    burst_count: 2048
   per_issuer:
-    per_second: 1024
-    burst_count: 2048
+    per_second: 1000000
+    burst_count: 1000000
+  per_room:
+    per_second: 1000000
+    burst_count: 1000000
+  per_user:
+    per_second: 1000000
+    burst_count: 1000000
 app_service_config_files:
   - /data/app-service.yaml
 ```

@@ -7,7 +7,19 @@ axios.defaults.baseURL = process.env.SYNAPSE_URL || 'http://localhost:8008'
 axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
 axios.defaults.headers.post['Content-Type'] = 'application/json'
 
+axios.interceptors.response.use(null, async (error) => {
+  if (error.config && error.response && error.response.status === 429) {
+    const retryAfter = error.response.data.retry_after_ms || 1000
+    log.warn(`Rate limited. Retrying after ${retryAfter}ms...`)
+    await new Promise((resolve) => setTimeout(resolve, retryAfter))
+    return axios.request(error.config)
+  }
+  return Promise.reject(error)
+})
+
 const applicationServiceToken = process.env.AS_TOKEN || ''
+
+export const adminAccessToken = access_token
 
 export interface SessionOptions {
   headers: {
@@ -46,6 +58,21 @@ export function formatUserSessionOptions(accessToken: string): SessionOptions {
 }
 
 /**
+ * Get session options for Application Service masquerading
+ * @param userId The Matrix User ID to masquerade as
+ * @returns Axios session options
+ */
+export function getAsSessionOptions(userId: string): SessionOptions {
+  if (!applicationServiceToken) {
+    throw new Error('AS_TOKEN is not set')
+  }
+  return {
+    headers: { Authorization: `Bearer ${applicationServiceToken}` },
+    params: { user_id: userId },
+  }
+}
+
+/**
  * Lookup and format a user's access token to use in axios
  * @param rcId The user's Rocket.Chat ID
  * @returns A axios-compatible session option object to contain the credentials as Synapse expects them
@@ -79,6 +106,15 @@ export async function getMatrixMembers(
 }
 
 let serverName: string
+let adminUserId: string
+
+export async function getAdminUserId(): Promise<string> {
+  if (!adminUserId) {
+    adminUserId = (await axios.get('/_matrix/client/v3/account/whoami')).data
+      .user_id
+  }
+  return adminUserId
+}
 
 export async function getServerName(): Promise<string> {
   if (!serverName) {

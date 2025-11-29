@@ -4,7 +4,7 @@ import adminAccessToken from '../config/synapse_access_token.json'
 import { IdMapping } from '../entity/IdMapping'
 import log from '../helpers/logger'
 import { createMembership, getUserId, save } from '../helpers/storage'
-import { axios } from '../helpers/synapse'
+import { axios, formatUserSessionOptions } from '../helpers/synapse'
 
 export type RcUser = {
   _id: string
@@ -36,7 +36,7 @@ export function mapUser(rcUser: RcUser): MatrixUser {
   return {
     user_id: '',
     username: rcUser.username,
-    displayname: rcUser.name,
+    displayname: rcUser.username, 
     password: '',
     admin: rcUser.roles.includes('admin'),
   }

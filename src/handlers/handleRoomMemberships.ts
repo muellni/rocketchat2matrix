@@ -10,6 +10,7 @@ import {
   formatUserSessionOptions,
   getMatrixMembers,
 } from '../helpers/synapse'
+import adminTokenConfig from '../config/synapse_access_token.json'
 import { getFilteredMembers } from './rooms'
 
 /**
@@ -46,8 +47,14 @@ export async function handleRoomMemberships() {
       await Promise.all(
         actualMembers.map(async (actualMember) => {
           let userSessionOptions = {}
+          // Determine if this actual member is the configured admin user.
+          const adminMatrixUserId = adminTokenConfig?.user_id || ''
+          const isAdmin =
+            (adminUsername && actualMember.includes(adminUsername)) ||
+            (adminMatrixUserId && actualMember === adminMatrixUserId)
+
           // set session options for non-admins
-          if (!actualMember.includes(adminUsername)) {
+          if (!isAdmin) {
             const memberMapping = await getMappingByMatrixId(actualMember)
             if (!memberMapping || !memberMapping.accessToken) {
               throw new Error(
@@ -59,10 +66,7 @@ export async function handleRoomMemberships() {
             )
           }
 
-          if (
-            !memberNames.includes(actualMember) &&
-            !actualMember.includes(adminUsername) // exclude admin from removal
-          ) {
+          if (!memberNames.includes(actualMember) && !isAdmin) {
             // remove excess members from rooms
             log.warn(
               `Member ${actualMember} should not be in room ${roomMapping.matrixId}, removing`

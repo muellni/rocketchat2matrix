@@ -11,6 +11,9 @@ import { handle as handleMessage } from './handlers/messages'
 import { handlePinnedMessages } from './handlers/pinnedMessages'
 import { handle as handleRoom } from './handlers/rooms'
 import { handle as handleUser } from './handlers/users'
+import { handle as handleUpload } from './handlers/uploads'
+import { handle as handleEmoji, finalizeEmojis } from './handlers/emojis'
+import { handleAvatars } from './handlers/avatars'
 import log from './helpers/logger'
 import { initStorage } from './helpers/storage'
 import { whoami } from './helpers/synapse'
@@ -40,6 +43,14 @@ async function loadRcExport(entity: Entity) {
         await handleMessage(item)
         break
 
+      case Entity.CustomEmojis:
+        await handleEmoji(item)
+        break
+
+      case Entity.Uploads:
+        await handleUpload(item)
+        break
+
       default:
         throw new Error(`Unhandled Entity: ${entity}`)
     }
@@ -51,10 +62,17 @@ async function main() {
     await whoami()
     await initStorage()
 
+    log.info('Parsing custom emojis')
+    await loadRcExport(Entity.CustomEmojis)
+    await finalizeEmojis()
     log.info('Parsing users')
     await loadRcExport(Entity.Users)
     log.info('Parsing rooms')
-    await loadRcExport(Entity.Rooms)
+    await loadRcExport(Entity.Rooms) 
+    log.info('Migrating avatars')
+    await handleAvatars()
+    log.info('Migrating uploads')
+    await loadRcExport(Entity.Uploads)
     log.info('Parsing messages')
     await loadRcExport(Entity.Messages)
     log.info('Setting direct chats to be displayed as such for each user')

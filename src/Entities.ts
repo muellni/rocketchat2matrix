@@ -2,6 +2,8 @@ export const enum Entity {
   Users = 'users',
   Rooms = 'rooms',
   Messages = 'messages',
+  CustomEmojis = 'customEmojis',
+  Uploads = 'uploads',
 }
 
 type EntityConfig = {
@@ -24,4 +26,13 @@ export const entities: {
     filename: 'rocketchat_message.json',
     mappingType: 2,
   },
-} as const
+  customEmojis: {
+    filename: 'rocketchat_custom_emoji.json',
+    mappingType: 3,
+  },
+  uploads: {
+    filename: 'rocketchat_uploads.json',
+    mappingType: 4,
+  },
+}
+

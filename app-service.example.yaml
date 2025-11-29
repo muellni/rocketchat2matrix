@@ -7,3 +7,6 @@ namespaces:
   users:
     - exclusive: false
       regex: '@.*'
+  aliases:
+    - exclusive: false
+      regex: '#.*'

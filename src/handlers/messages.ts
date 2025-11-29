@@ -10,6 +10,7 @@ import {
   getUserId,
   getUserMappingByName,
   save,
+  getMapping,
 } from '../helpers/storage'
 import {
   axios,
@@ -17,6 +18,7 @@ import {
   getServerName,
 } from '../helpers/synapse'
 import emojiMap from '../emojis.json'
+import { customEmojiNames } from './emojis'
 import { executeAndHandleMissingMember } from './rooms'
 
 const applicationServiceToken = process.env.AS_TOKEN || ''
@@ -51,7 +53,25 @@ export type RcMessage = {
     username?: string
   }
   drid?: string // The direct room id (if belongs to a direct room).
-  // attachments?: any[] // An array of attachment objects, available only when the message has at least one attachment.
+  file?: {
+    _id: string
+    name: string
+    type: string
+  }
+  attachments?: {
+    title?: string
+    title_link?: string
+    image_url?: string
+    audio_url?: string
+    video_url?: string
+    image_type?: string
+    audio_type?: string
+    video_type?: string
+    image_size?: number
+    audio_size?: number
+    video_size?: number
+    description?: string
+  }[]
   reactions?: {
     [key: string]: {
       usernames: string[]
@@ -72,6 +92,12 @@ export type MatrixMessage = {
   'm.mentions'?: {
     room?: boolean
     user_ids?: Array<string>
+  }
+  url?: string
+  info?: {
+    mimetype?: string
+    size?: number
+    [key: string]: any
   }
   'm.relates_to'?: {
     rel_type: 'm.thread'
@@ -157,7 +183,73 @@ export async function mapTextMessage(
  * @returns The Matrix event body
  */
 export async function mapMessage(rcMessage: RcMessage): Promise<MatrixMessage> {
-  // handle other types of messages like pictures and files
+  // If there's an uploaded file with a mapping, return an appropriate media message.
+  if (rcMessage.file && rcMessage.file._id) {
+    const uploadMapping = await getMapping(
+      rcMessage.file._id,
+      entities[Entity.Uploads].mappingType
+    )
+    if (uploadMapping && uploadMapping.matrixId) {
+      const mime = rcMessage.file.type || ''
+      const msgtype = mime.startsWith('image/') ? 'm.image' :
+                      mime.startsWith('video/') ? 'm.video' :
+                      mime.startsWith('audio/') ? 'm.audio' :
+                      'm.file'
+
+      return {
+        type: 'm.room.message',
+        msgtype: msgtype,
+        body: rcMessage.file.name,
+        url: uploadMapping.matrixId,
+        info: {
+          mimetype: rcMessage.file.type,
+        },
+      }
+    }
+  }
+
+  // Basic handling for attachments that reference external URLs (images, audio, video)
+  if (rcMessage.attachments && rcMessage.attachments.length > 0) {
+    const att = rcMessage.attachments[0]
+    if (att.image_url) {
+      return {
+        type: 'm.room.message',
+        msgtype: 'm.image',
+        body: att.title || rcMessage.msg || 'image',
+        url: att.image_url,
+        info: {
+          mimetype: att.image_type,
+          size: att.image_size,
+        },
+      }
+    }
+    if (att.video_url) {
+      return {
+        type: 'm.room.message',
+        msgtype: 'm.video',
+        body: att.title || rcMessage.msg || 'video',
+        url: att.video_url,
+        info: {
+          mimetype: att.video_type,
+          size: att.video_size,
+        },
+      }
+    }
+    if (att.audio_url) {
+      return {
+        type: 'm.room.message',
+        msgtype: 'm.audio',
+        body: att.title || rcMessage.msg || 'audio',
+        url: att.audio_url,
+        info: {
+          mimetype: att.audio_type,
+          size: att.audio_size,
+        },
+      }
+    }
+  }
+
+  // Fallback to text mapping for any other message type
   return mapTextMessage(rcMessage)
 }
 
@@ -195,10 +287,25 @@ export async function createMessage(
   ts: number,
   transactionId: string
 ): Promise<string> {
+  // Ensure 'body' exists — Matrix requires it for m.room.message content
+  const msgToSend = { ...matrixMessage }
+  if (!msgToSend.body || typeof msgToSend.body !== 'string' || msgToSend.body.trim() === '') {
+    // Try to derive a body from formatted_body by stripping tags
+    if (msgToSend.formatted_body && typeof msgToSend.formatted_body === 'string') {
+      msgToSend.body = msgToSend.formatted_body.replace(/<[^>]+>/g, '').trim() || ' '
+    } else if (msgToSend.url) {
+      // For media messages, use a simple placeholder
+      msgToSend.body = msgToSend.msgtype === 'm.image' ? 'Image' : msgToSend.msgtype === 'm.video' ? 'Video' : 'File'
+    } else {
+      msgToSend.body = ' '
+    }
+    log.warn('Message had no body; using fallback body for transaction', transactionId, msgToSend)
+  }
+
   return (
     await axios.put(
       `/_matrix/client/v3/rooms/${room_id}/send/m.room.message/${transactionId}?user_id=${user_id}&ts=${ts}`,
-      matrixMessage,
+      msgToSend,
       formatUserSessionOptions(applicationServiceToken)
     )
   ).data.event_id
@@ -237,7 +344,44 @@ export async function handleReactions(
           const userMapping = await getUserMappingByName(rcUsername)
           if (!userMapping || !userMapping.accessToken) {
             log.warn(
-              `Could not find user mapping for name: ${rcUsername}, skipping reaction ${reactionEmoji} for message ${matrixMessageId}`
+              `Could not find user mapping for name: ${rcUsername}, attempting to send reaction as AS fallback for message ${matrixMessageId}`
+            )
+
+            // Fallback: if we have an application service token, try to post the reaction
+            // on behalf of the user using the user_id query parameter.
+            const asToken = applicationServiceToken
+            if (asToken) {
+              try {
+                const serverName = await getServerName()
+                const matrixUserId = `@${rcUsername}:${serverName}`
+                await executeAndHandleMissingMember(() =>
+                  axios.put(
+                    `/_matrix/client/v3/rooms/${matrixRoomId}/send/m.reaction/${transactionId}?user_id=${encodeURIComponent(
+                      matrixUserId
+                    )}`,
+                    {
+                      'm.relates_to': {
+                        rel_type: 'm.annotation',
+                        event_id: matrixMessageId,
+                        key: reactionEmoji,
+                      },
+                    },
+                    formatUserSessionOptions(asToken)
+                  )
+                )
+                log.http(
+                  `Added reaction ${reactionEmoji} for user ${rcUsername} using AS fallback`
+                )
+                return
+              } catch (asError: any) {
+                log.warn(
+                  `AS fallback failed for ${rcUsername}: ${asError?.response?.data || asError.message}`
+                )
+              }
+            }
+
+            log.warn(
+              `Skipping reaction ${reactionEmoji} for message ${matrixMessageId} as no mapping or AS fallback available for ${rcUsername}`
             )
             return
           }
@@ -289,6 +433,9 @@ export async function handleReactions(
  * @returns The found emoji or `searchString`
  */
 export function getEmoji(searchString: string): string {
+  // First check our local custom emoji set (they are stored as :name:)
+  if (customEmojiNames.has(searchString)) return searchString
+
   return (
     (emojiMap as EmojiMappings)[searchString] ||
     emoji.get(searchString.replaceAll(':', '')) ||
@@ -311,9 +458,15 @@ export async function handle(rcMessage: RcMessage): Promise<void> {
 
   const room_id = await getRoomId(rcMessage.rid)
   if (!room_id) {
-    log.warn(
-      `Could not find room ${rcMessage.rid} for message ${rcMessage._id}, skipping.`
-    )
+    if ((process.env.INCLUDED_ROOMS || '').length > 0) {
+      log.debug(
+        `Could not find room ${rcMessage.rid} for message ${rcMessage._id}, skipping (likely excluded).`
+      )
+    } else {
+      log.warn(
+        `Could not find room ${rcMessage.rid} for message ${rcMessage._id}, skipping.`
+      )
+    }
     return
   }
 

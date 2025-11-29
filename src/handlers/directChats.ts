@@ -4,8 +4,10 @@ import { entities } from '../Entities'
 import log from '../helpers/logger'
 import { getMappingByMatrixId, getRoomId } from '../helpers/storage'
 import {
+  adminAccessToken,
   axios,
   formatUserSessionOptions,
+  getAdminUserId,
   getMatrixMembers,
 } from '../helpers/synapse'
 import { RcRoom, RcRoomTypes } from './rooms'
@@ -107,9 +109,21 @@ export async function setDirectChats(
 
   // Iterate over all users
   for (const [user, chats] of Object.entries(userDirectChatMappings)) {
-    const userSessionOptions = formatUserSessionOptions(
-      (await getMappingByMatrixId(user))?.accessToken || ''
-    )
+    let accessToken = (await getMappingByMatrixId(user))?.accessToken
+
+    if (!accessToken) {
+      const adminId = await getAdminUserId()
+      if (user === adminId) {
+        accessToken = adminAccessToken
+      } else {
+        log.warn(
+          `No access token found for ${user}, skipping direct chat update.`
+        )
+        continue
+      }
+    }
+
+    const userSessionOptions = formatUserSessionOptions(accessToken)
 
     // Check if direct chats are already set
     let settingExists = false
