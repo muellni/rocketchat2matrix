@@ -9,6 +9,7 @@ import {
   axios,
   formatUserSessionOptions,
   getMatrixMembers,
+  getAsSessionOptions,
 } from '../helpers/synapse'
 import adminTokenConfig from '../config/synapse_access_token.json'
 import { getFilteredMembers } from './rooms'
@@ -25,8 +26,7 @@ export async function handleRoomMemberships() {
     throw new Error(`No room mappings found`)
   }
 
-  await Promise.all(
-    roomMappings.map(async (roomMapping) => {
+  for (const roomMapping of roomMappings) {
       log.info(
         `Checking memberships for room ${roomMapping.rcId} / ${roomMapping.matrixId}`
       )
@@ -72,11 +72,34 @@ export async function handleRoomMemberships() {
               `Member ${actualMember} should not be in room ${roomMapping.matrixId}, removing`
             )
 
-            await axios.post(
-              `/_matrix/client/v3/rooms/${roomMapping.matrixId}/leave`,
-              {},
-              userSessionOptions
-            )
+            // Try to have the user leave using their session token with retries
+            const leaveUrl = `/_matrix/client/v3/rooms/${roomMapping.matrixId}/leave`
+            const maxRetries = 3
+            let attempt = 0
+            let left = false
+            while (attempt < maxRetries && !left) {
+              attempt++
+              try {
+                await axios.post(leaveUrl, {}, userSessionOptions)
+                left = true
+                break
+              } catch (leaveError: any) {
+                const waitMs = 250 * attempt
+                log.warn(
+                  `Attempt ${attempt} to leave room failed for ${actualMember}: ${leaveError?.message || leaveError}. Retrying in ${waitMs}ms...`
+                )
+                await new Promise((r) => setTimeout(r, waitMs))
+              }
+            }
+
+            if (left) {
+              log.info(`Member ${actualMember} left room ${roomMapping.matrixId}`)
+            } else {
+              log.warn(
+                `User leave failed after ${maxRetries} attempts for ${actualMember}`
+              )
+              // No AS fallback: give up after retries and leave the member in the room
+            }
           } else {
             // set read status for allowed members
             const lastMessages = (
@@ -104,15 +127,32 @@ export async function handleRoomMemberships() {
               log.info(
                 `Member ${actualMember} is allowed in room ${roomMapping.matrixId}, setting read status for message ${lastMessages.chunk[0].event_id}`
               )
-              await axios.post(
-                `/_matrix/client/v3/rooms/${roomMapping.matrixId}/receipt/m.read/${lastMessages.chunk[0].event_id}`,
-                {},
-                userSessionOptions
-              )
+              // Try to post the read-receipt with retries to handle transient errors
+              const receiptUrl = `/_matrix/client/v3/rooms/${roomMapping.matrixId}/receipt/m.read/${lastMessages.chunk[0].event_id}`
+              const maxReceiptRetries = 3
+              let receiptAttempt = 0
+              let receiptOk = false
+              while (receiptAttempt < maxReceiptRetries && !receiptOk) {
+                receiptAttempt++
+                try {
+                  await axios.post(receiptUrl, {}, userSessionOptions)
+                  receiptOk = true
+                } catch (receiptError: any) {
+                  const waitMs = 200 * receiptAttempt
+                  log.warn(
+                    `Attempt ${receiptAttempt} to set read receipt failed for ${actualMember} in ${roomMapping.matrixId}: ${receiptError?.message || receiptError}. Retrying in ${waitMs}ms...`
+                  )
+                  await new Promise((r) => setTimeout(r, waitMs))
+                }
+              }
+              if (!receiptOk) {
+                log.warn(
+                  `Failed to set read receipt for ${actualMember} in ${roomMapping.matrixId} after ${maxReceiptRetries} attempts`
+                )
+              }
             }
           }
         })
       )
-    })
-  )
+    }
 }
