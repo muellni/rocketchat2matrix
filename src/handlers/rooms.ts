@@ -79,6 +79,26 @@ export type MatrixRoom = {
 }
 
 /**
+ * Parse channel mappings from environment variable
+ * @returns A map of Rocket.Chat channel names to Matrix channel names
+ */
+function getChannelMappings(): Map<string, string> {
+  const mappings = new Map<string, string>()
+  const channelMappingsStr = process.env.CHANNEL_MAPPINGS || ''
+
+  if (channelMappingsStr) {
+    channelMappingsStr.split(',').forEach((mapping) => {
+      const [rcName, matrixName] = mapping.split(':').map((s) => s.trim())
+      if (rcName && matrixName) {
+        mappings.set(rcName, matrixName)
+      }
+    })
+  }
+
+  return mappings
+}
+
+/**
  * Translate a Rocket.Chat room to a Matrix room
  * @param rcRoom The Rocket.Chat room to convert
  * @returns The Matrix room event body
@@ -90,10 +110,18 @@ export function mapRoom(rcRoom: RcRoom): MatrixRoom {
     },
   }
 
+  const channelMappings = getChannelMappings()
+
   if (rcRoom.fname || rcRoom.name) {
     room.name = rcRoom.fname || rcRoom.name
     if (rcRoom.name) {
-      room.room_alias_name = rcRoom.name
+      // Apply channel mapping if it exists
+      const mappedName = channelMappings.get(rcRoom.name)
+      room.room_alias_name = mappedName || rcRoom.name
+      if (mappedName) {
+        log.info(`Mapping channel ${rcRoom.name} to ${mappedName}`)
+        room.name = mappedName
+      }
     }
   }
 
@@ -277,7 +305,9 @@ export async function acceptInvitation(
   log.http(
     `Accepting invitation for member ${inviteeMapping.rcId} aka. ${inviteeMapping.matrixId}`
   )
-  let sessionOptions = formatUserSessionOptions(inviteeMapping.accessToken || '')
+  let sessionOptions = formatUserSessionOptions(
+    inviteeMapping.accessToken || ''
+  )
   if (inviteeMapping.matrixId) {
     try {
       sessionOptions = getAsSessionOptions(inviteeMapping.matrixId)
@@ -285,11 +315,7 @@ export async function acceptInvitation(
       // Ignore if AS token not set
     }
   }
-  await axios.post(
-    `/_matrix/client/v3/join/${roomId}`,
-    {},
-    sessionOptions
-  )
+  await axios.post(`/_matrix/client/v3/join/${roomId}`, {}, sessionOptions)
 }
 
 /**
