@@ -36,7 +36,7 @@ export type AccessToken = {
  * Parse user mappings from environment variable
  * @returns A map of Rocket.Chat usernames to Matrix usernames
  */
-function getUserMappings(): Map<string, string> {
+export function getUserMappings(): Map<string, string> {
   const mappings = new Map<string, string>()
   const userMappingsStr = process.env.USER_MAPPINGS || ''
 
@@ -62,10 +62,12 @@ export function mapUser(rcUser: RcUser): MatrixUser {
     log.info(`Mapping user ${rcUser.username} to ${mappedUsername}`)
   }
 
+  const finalUsername = mappedUsername || rcUser.username
+
   return {
     user_id: '',
-    username: mappedUsername || rcUser.username,
-    displayname: rcUser.username,
+    username: finalUsername,
+    displayname: finalUsername, // Use mapped username as display name too
     password: '',
     admin: rcUser.roles.includes('admin'),
   }

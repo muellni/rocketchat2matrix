@@ -191,10 +191,13 @@ export async function mapMessage(rcMessage: RcMessage): Promise<MatrixMessage> {
     )
     if (uploadMapping && uploadMapping.matrixId) {
       const mime = rcMessage.file.type || ''
-      const msgtype = mime.startsWith('image/') ? 'm.image' :
-                      mime.startsWith('video/') ? 'm.video' :
-                      mime.startsWith('audio/') ? 'm.audio' :
-                      'm.file'
+      const msgtype = mime.startsWith('image/')
+        ? 'm.image'
+        : mime.startsWith('video/')
+          ? 'm.video'
+          : mime.startsWith('audio/')
+            ? 'm.audio'
+            : 'm.file'
 
       return {
         type: 'm.room.message',
@@ -204,6 +207,17 @@ export async function mapMessage(rcMessage: RcMessage): Promise<MatrixMessage> {
         info: {
           mimetype: rcMessage.file.type,
         },
+      }
+    } else {
+      // File upload has no mapping - file wasn't migrated (missing from export)
+      // Create a text message indicating the missing file
+      log.warn(
+        `File upload ${rcMessage.file._id} (${rcMessage.file.name}) not found in uploads - creating placeholder message`
+      )
+      return {
+        type: 'm.room.message',
+        msgtype: 'm.text',
+        body: `[File not migrated: ${rcMessage.file.name}]${rcMessage.msg ? '\n' + rcMessage.msg : ''}`,
       }
     }
   }
@@ -289,17 +303,34 @@ export async function createMessage(
 ): Promise<string> {
   // Ensure 'body' exists — Matrix requires it for m.room.message content
   const msgToSend = { ...matrixMessage }
-  if (!msgToSend.body || typeof msgToSend.body !== 'string' || msgToSend.body.trim() === '') {
+  if (
+    !msgToSend.body ||
+    typeof msgToSend.body !== 'string' ||
+    msgToSend.body.trim() === ''
+  ) {
     // Try to derive a body from formatted_body by stripping tags
-    if (msgToSend.formatted_body && typeof msgToSend.formatted_body === 'string') {
-      msgToSend.body = msgToSend.formatted_body.replace(/<[^>]+>/g, '').trim() || ' '
+    if (
+      msgToSend.formatted_body &&
+      typeof msgToSend.formatted_body === 'string'
+    ) {
+      msgToSend.body =
+        msgToSend.formatted_body.replace(/<[^>]+>/g, '').trim() || ' '
     } else if (msgToSend.url) {
       // For media messages, use a simple placeholder
-      msgToSend.body = msgToSend.msgtype === 'm.image' ? 'Image' : msgToSend.msgtype === 'm.video' ? 'Video' : 'File'
+      msgToSend.body =
+        msgToSend.msgtype === 'm.image'
+          ? 'Image'
+          : msgToSend.msgtype === 'm.video'
+            ? 'Video'
+            : 'File'
     } else {
       msgToSend.body = ' '
     }
-    log.warn('Message had no body; using fallback body for transaction', transactionId, msgToSend)
+    log.warn(
+      'Message had no body; using fallback body for transaction',
+      transactionId,
+      msgToSend
+    )
   }
 
   return (

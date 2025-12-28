@@ -18,7 +18,7 @@ import {
   getAsSessionOptions,
   getUserSessionOptions,
 } from '../helpers/synapse'
-import { RcUser } from './users'
+import { RcUser, getUserMappings } from './users'
 
 /**
  * Types of Rocket.Chat rooms
@@ -113,14 +113,25 @@ export function mapRoom(rcRoom: RcRoom): MatrixRoom {
   const channelMappings = getChannelMappings()
 
   if (rcRoom.fname || rcRoom.name) {
-    room.name = rcRoom.fname || rcRoom.name
+    // Determine the mapped channel name if it exists
+    const mappedChannelName = rcRoom.name
+      ? channelMappings.get(rcRoom.name)
+      : undefined
+
+    // Set room display name (prefer fname, but use mapped name if available and no fname)
+    if (rcRoom.fname) {
+      room.name = rcRoom.fname
+    } else if (mappedChannelName) {
+      room.name = mappedChannelName
+    } else {
+      room.name = rcRoom.name
+    }
+
+    // Set room alias name (this must be a valid Matrix alias)
     if (rcRoom.name) {
-      // Apply channel mapping if it exists
-      const mappedName = channelMappings.get(rcRoom.name)
-      room.room_alias_name = mappedName || rcRoom.name
-      if (mappedName) {
-        log.info(`Mapping channel ${rcRoom.name} to ${mappedName}`)
-        room.name = mappedName
+      room.room_alias_name = mappedChannelName || rcRoom.name
+      if (mappedChannelName) {
+        log.info(`Mapping channel ${rcRoom.name} to ${mappedChannelName}`)
       }
     }
   }
@@ -134,8 +145,24 @@ export function mapRoom(rcRoom: RcRoom): MatrixRoom {
 
   switch (rcRoom.t) {
     case RcRoomTypes.direct:
-      if (rcRoom.usersCount == 1 && rcRoom.lastMessage) {
-        room.name = rcRoom.lastMessage.u.name
+      // For direct messages, do NOT set a room name (Matrix will show other participants)
+      // EXCEPT for self-DMs (DMs with yourself) where we need to set a name
+      // Also set name if there's an explicit fname (custom name)
+      if (rcRoom.fname && !room.name) {
+        room.name = rcRoom.fname
+      } else if (
+        rcRoom.usersCount === 1 &&
+        rcRoom.usernames &&
+        rcRoom.usernames.length === 1
+      ) {
+        // Self-DM: Set the username as the room name, with mapping applied
+        const userMappings = getUserMappings()
+        const mappedUsername =
+          userMappings.get(rcRoom.usernames[0]) || rcRoom.usernames[0]
+        room.name = mappedUsername
+      } else {
+        // Regular DM: Clear any name that might have been set earlier
+        delete room.name
       }
       room.is_direct = true
       room.preset = MatrixRoomPresets.trusted
@@ -147,6 +174,10 @@ export function mapRoom(rcRoom: RcRoom): MatrixRoom {
       break
 
     case RcRoomTypes.private:
+      // Ensure private rooms have a name, even if empty
+      if (!room.name || room.name.trim().length === 0) {
+        room.name = rcRoom.name || `Private Room (${rcRoom._id})`
+      }
       room.preset = MatrixRoomPresets.private
       room.visibility = MatrixRoomVisibility.private
       break
@@ -232,6 +263,29 @@ export async function getCreatorSessionOptions(
 }
 
 /**
+ * Get the room ID for an existing room alias
+ * @param roomAlias The room alias (without the # prefix or server name)
+ * @returns The Matrix room ID if it exists, otherwise null
+ */
+async function getRoomIdByAlias(roomAlias: string): Promise<string | null> {
+  try {
+    const serverName =
+      process.env.SYNAPSE_SERVER_NAME ||
+      new URL(process.env.SYNAPSE_URL || 'http://localhost:8008').hostname
+    const fullAlias = `#${roomAlias}:${serverName}`
+    const response = await axios.get(
+      `/_matrix/client/v3/directory/room/${encodeURIComponent(fullAlias)}`
+    )
+    return response.data.room_id
+  } catch (error) {
+    if (error instanceof AxiosError && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
+/**
  * Send a request to Synapse, creating the room
  * @param matrixRoom The Matrix room object to create
  * @param creatorSessionOptions The credentials of the room creator
@@ -241,13 +295,31 @@ export async function registerRoom(
   matrixRoom: MatrixRoom,
   creatorSessionOptions: SessionOptions | object
 ): Promise<string> {
-  return (
-    await axios.post(
-      '/_matrix/client/v3/createRoom',
-      matrixRoom,
-      creatorSessionOptions
-    )
-  ).data.room_id
+  try {
+    return (
+      await axios.post(
+        '/_matrix/client/v3/createRoom',
+        matrixRoom,
+        creatorSessionOptions
+      )
+    ).data.room_id
+  } catch (error) {
+    if (
+      error instanceof AxiosError &&
+      error.response?.status === 400 &&
+      error.response?.data?.errcode === 'M_ROOM_IN_USE' &&
+      matrixRoom.room_alias_name
+    ) {
+      log.info(
+        `Room alias ${matrixRoom.room_alias_name} already exists, using existing room`
+      )
+      const existingRoomId = await getRoomIdByAlias(matrixRoom.room_alias_name)
+      if (existingRoomId) {
+        return existingRoomId
+      }
+    }
+    throw error
+  }
 }
 
 /**
